@@ -9,6 +9,7 @@ import org.apache.spark.mllib.tree.model.DecisionTreeModel
 import org.apache.spark.rdd.RDD
 import org.apache.spark.{SparkConf, SparkContext}
 import org.joda.time._
+import org.jfree.data.category.DefaultCategoryDataset
 
 object RunDecisionTreeBinary {
 
@@ -23,19 +24,28 @@ object RunDecisionTreeBinary {
     println("RunDecisionTreeBinary")
     println("==========数据准备阶段===============")
     val (trainData, validationData, testData, categoriesMap) = prepareDate(sc)
-    trainData.persist();
-    validationData.persist();
-    testData.persist()
+    trainData.persist(); validationData.persist(); testData.persist()
 
     println("==========训练评估阶段===============")
-    val model = trainEvaluate(trainData, validationData)
+    println()
+    print("是否需要进行参数调校 (Y:是  N:否) ? ")
+    if (readLine() == "Y") {
+      val model = parametersTunning(trainData, validationData)
 
-    println("==========测试阶段===============")
-    val auc = evaluateModel(model, testData)
-    println("使用testata测试最佳模型,结果 AUC:" + auc)
+      println("==========测试阶段===============")
+      val auc = evaluateModel(model, testData)
+      println("使用testData测试最佳模型,结果 AUC:" + auc)
+      println("==========预测数据===============")
+      PredictData(sc, model, categoriesMap)
+    } else {
+      val model = trainEvaluate(trainData, validationData)
+      println("==========测试阶段===============")
+      val auc = evaluateModel(model, testData)
+      println("使用testData测试最佳模型,结果 AUC:" + auc)
+      println("==========预测数据===============")
+      PredictData(sc, model, categoriesMap)
+    }
 
-    println("==========预测数据===============")
-    PredictData(sc, model, categoriesMap)
 
     //取消缓存
     trainData.unpersist();validationData.unpersist();testData.unpersist()
@@ -104,7 +114,8 @@ object RunDecisionTreeBinary {
   def trainEvaluate(trainData: RDD[LabeledPoint], validationData: RDD[LabeledPoint]): DecisionTreeModel = {
     print("开始训练...")
     //评估方法熵或者gini;
-    val (model, time) = trainModel(trainData, "entropy", 5, 5)
+    val (model, time) = trainModel(trainData, "entropy", 10, 10)
+
     println("训练完成,所需时间:" + time + "毫秒")
     val AUC = evaluateModel(model, validationData)
     println("评估结果AUC=" + AUC)
@@ -167,7 +178,7 @@ object RunDecisionTreeBinary {
 
     //----------------------2.创建训练评估所需数据 RDD[LabeledPoint]-------------
     //lazy记得collect
-    val dataRDD = lines.map { fields =>
+    val dataRDD = lines.take(10).map { fields =>
       //去掉引号
       val trFields = fields.map(_.replaceAll("\"", ""))
       val categoryFeaturesArray = Array.ofDim[Double](categoriesMap.size)
@@ -193,8 +204,81 @@ object RunDecisionTreeBinary {
         }
       }
       println("网址：  " + url + "==>预测:" + predictDesc)
-    }.collect()
+    }
 
+  }
+
+  /**
+    * 调整参数
+    * 同一时间只调整一个参数
+    * @param trainData
+    * @param validationData
+    * @return
+    */
+  def parametersTunning(trainData: RDD[LabeledPoint], validationData: RDD[LabeledPoint]): DecisionTreeModel = {
+    println("-----评估 Impurity参数使用 gini, entropy---------")
+//    evaluateParameter(trainData, validationData, "impurity", Array("gini", "entropy"), Array(10), Array(10))
+
+    println("-----评估MaxDepth参数使用 (3, 5, 10, 15, 20)---------")
+    evaluateParameter(trainData, validationData, "maxDepth", Array("gini"), Array(3, 5, 10, 15, 20, 25), Array(10))
+
+    println("-----评估maxBins参数使用 (3, 5, 10, 50, 100)---------")
+    evaluateParameter(trainData, validationData, "maxBins", Array("gini"), Array(10), Array(3, 5, 10, 50, 100, 200))
+
+    println("-----所有参数交叉评估找出最好的参数组合---------")
+    val bestModel = evaluateAllParameter(trainData, validationData, Array("gini", "entropy"),
+      Array(3, 5, 10, 15, 20), Array(3, 5, 10, 50, 100))
+    return (bestModel)
+  }
+
+  def evaluateParameter(trainData: RDD[LabeledPoint], validationData: RDD[LabeledPoint],
+                        evaluateParameter: String, impurityArray: Array[String], maxdepthArray: Array[Int], maxBinsArray: Array[Int]) =
+  {
+    //画图,柱行图
+    var dataBarChart = new DefaultCategoryDataset()
+    //折线图
+    var dataLineChart = new DefaultCategoryDataset()
+
+    //三重循环
+    for (impurity <- impurityArray; maxDepth <- maxdepthArray; maxBins <- maxBinsArray) {
+      val (model, time) = trainModel(trainData, impurity, maxDepth, maxBins)
+      val auc = evaluateModel(model, validationData)
+
+      val parameterData =
+        evaluateParameter match {
+          case "impurity" => impurity;
+          case "maxDepth" => maxDepth;
+          case "maxBins"  => maxBins
+        }
+      dataBarChart.addValue(auc, evaluateParameter, parameterData.toString())
+      dataLineChart.addValue(time, "Time", parameterData.toString())
+    }
+    Chart.plotBarLineChart("DecisionTree evaluations " + evaluateParameter, evaluateParameter, "AUC", 0.58, 0.7, "Time", dataBarChart, dataLineChart)
+  }
+
+  /**
+    * 对3个参数进行交叉评估
+    * @param trainData
+    * @param validationData
+    * @param impurityArray
+    * @param maxdepthArray
+    * @param maxBinsArray
+    * @return
+    */
+  def evaluateAllParameter(trainData: RDD[LabeledPoint], validationData: RDD[LabeledPoint], impurityArray: Array[String], maxdepthArray: Array[Int], maxBinsArray: Array[Int]): DecisionTreeModel =
+  {
+    val evaluationsArray =
+      for (impurity <- impurityArray; maxDepth <- maxdepthArray; maxBins <- maxBinsArray) yield {
+        val (model, time) = trainModel(trainData, impurity, maxDepth, maxBins)
+        val auc = evaluateModel(model, validationData)
+        (impurity, maxDepth, maxBins, auc)
+      }
+
+    val BestEval = (evaluationsArray.sortBy(_._4).reverse)(0)
+    println("调校后最佳参数：impurity:" + BestEval._1 + "  ,maxDepth:" + BestEval._2 + "  ,maxBins:" + BestEval._3
+      + "  ,结果AUC = " + BestEval._4)
+    val (bestModel, time) = trainModel(trainData.union(validationData), BestEval._1, BestEval._2, BestEval._3)
+    return bestModel
   }
 
   /**

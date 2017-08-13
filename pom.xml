@@ -9,6 +9,7 @@
     <scala.version>2.10.5</scala.version>
     <spark.version>1.4.0</spark.version>
     <jodatime.version>2.9.9</jodatime.version>
+    <jFreeChart.version>1.0.19</jFreeChart.version>
     <maven.compiler.plugin>3.5.1</maven.compiler.plugin>
   </properties>
 
@@ -42,6 +43,13 @@
       <artifactId>joda-time</artifactId>
       <version>${jodatime.version}</version>
     </dependency>
+    <!-- https://mvnrepository.com/artifact/org.jfree/jfreechart -->
+    <dependency>
+      <groupId>org.jfree</groupId>
+      <artifactId>jfreechart</artifactId>
+      <version>${jFreeChart.version}</version>
+    </dependency>
+
     <dependency>
       <groupId>junit</groupId>
       <artifactId>junit</artifactId>
